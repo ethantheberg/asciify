@@ -106,9 +106,11 @@ VALUES = [
 ]
 SOLIDASCII = " ░▒▓█"
 SOLIDVALUES = [0.0, 22.02, 45.46, 127.68, 176.79]
-EDGEASCII = "_/|\\_/|\\_"
+EDGEASCII = "_/|\\"
 COLORRESET = "\033[0m"
 CHARASPECT = 0.5
+ANGLETHRESHOLD = 0.7;
+
 
 def loadImage(path):
     image = Image.open(path)
@@ -152,32 +154,55 @@ def getColorEscaper(color):
     code = 36 * r + 6 * g + b + 16
     return f"\033[38;5;{math.floor(code)}m"
 
+def difference_of_gaussian(image, t1, t2):
+    blur1 = cv2.GaussianBlur(image, (t1, t1), 0)
+    blur2 = cv2.GaussianBlur(image, (t2, t2), 0)
+    return blur2 - blur1
+
 # TODO thin edges with thresholded downscaling
 def getEdgeMap(image, size):
     image = image.astype(np.float32)
-    image = cv2.GaussianBlur(image, (5, 5), 0)
+    image = cv2.GaussianBlur(image, (3, 3), 0)
     sobelx = cv2.Scharr(image, cv2.CV_32F, 1, 0)
     sobely = cv2.Scharr(image, cv2.CV_32F, 0, 1)
     gradient = np.hypot(sobelx, sobely)
     angle = np.vectorize(
-        lambda x, y: round((math.atan2(y, x) + math.pi) / math.pi * 4)
+        lambda x, y: round((math.atan2(y, x) + math.pi) / math.pi * 4)%4
     )(sobely, sobelx)
     angle = np.where(gradient > np.max(gradient) * 0.1, angle, -1)
 
-    angle = cv2.resize(angle, size, interpolation=cv2.INTER_NEAREST)
-    
-    return angle
+    downscaledAngle = np.zeros((size[1], size[0]))
+    xStep = angle.shape[1] / size[0]
+    yStep = angle.shape[0] / size[1]
+    print(angle.shape, size, xStep, yStep)
+    for x in range(size[0]):
+        for y in range(size[1]):
+            downscaledAngle[y][x] = getDominantAngle(
+                angle[int(y * yStep) : int(min((y + 1) * yStep, angle.shape[0]-1)), int(x*xStep) : int(min((x + 1)*xStep, angle.shape[1]-1))]
+            )
+    return downscaledAngle
+
+def getDominantAngle(section):
+    angleCounts = np.zeros(4)
+    for i in range(section.shape[0]):
+        for j in range(section.shape[1]):
+            if section[i][j] >= 0:
+                angleCounts[int(section[i][j])] += 1
+    if sum(angleCounts) <= ANGLETHRESHOLD * section.size:
+        return -1
+    return np.argmax(angleCounts)
 
 def convertImage(image, charsAcross, useEdges=False, useColor=False, useSolid=False):
     downscaled = downscaleImage(image, charsAcross)
-    edgeMap = getEdgeMap(np.array(image.convert("L")), (downscaled.width, downscaled.height))
-    # plt.imshow(edgeMap)
-    # plt.show()
-    
+    imageArray = np.array(image.convert("L"))
+    print(imageArray.shape, image.width, image.height)
+    edgeMap = getEdgeMap(imageArray, (downscaled.width, downscaled.height))
     output = ""
     pixels = downscaled.getdata()
     lastColor = None
     for i in range(len(pixels)):
+        x = i % downscaled.width
+        y = i // downscaled.width
         if i % downscaled.width == 0:
             output += "\n"
         printProgressBar(i, len(pixels))
@@ -188,9 +213,9 @@ def convertImage(image, charsAcross, useEdges=False, useColor=False, useSolid=Fa
                 output += thisColor
                 lastColor = thisColor
 
-        if useEdges and edgeMap[i // downscaled.width][i % downscaled.width] >= 0:
+        if useEdges and edgeMap[y][x] >= 0:
             output += "\033[1m" 
-            output += EDGEASCII[int(edgeMap[i // downscaled.width][i % downscaled.width])] 
+            output += EDGEASCII[int(edgeMap[y][x])]
             output += "\033[22m"
         else:
             output += valueLookup(np.array(pixels[i]).mean(), useSolid)
